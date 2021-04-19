@@ -15,13 +15,15 @@ macro(_Sphinx_find_executable _exe)
       RESULT_VARIABLE _result
       OUTPUT_VARIABLE _output
       OUTPUT_STRIP_TRAILING_WHITESPACE)
-    if(_result EQUAL 0 AND _output MATCHES " ([0-9]+\\.[0-9]+\\.[0-9]+)$")
+    if(_result EQUAL 0 AND _output MATCHES " v?([0-9]+\\.[0-9]+\\.[0-9]+)$")
       set(SPHINX_${_uc}_VERSION "${CMAKE_MATCH_1}")
     endif()
 
-    add_executable(Sphinx::${_exe} IMPORTED GLOBAL)
-    set_target_properties(Sphinx::${_exe} PROPERTIES
-      IMPORTED_LOCATION "${SPHINX_${_uc}_EXECUTABLE}")
+    if(NOT TARGET Sphinx::${_exe})
+      add_executable(Sphinx::${_exe} IMPORTED GLOBAL)
+      set_target_properties(Sphinx::${_exe} PROPERTIES
+        IMPORTED_LOCATION "${SPHINX_${_uc}_EXECUTABLE}")
+    endif()
     set(Sphinx_${_exe}_FOUND TRUE)
   else()
     set(Sphinx_${_exe}_FOUND FALSE)
@@ -29,17 +31,58 @@ macro(_Sphinx_find_executable _exe)
   unset(_uc)
 endmacro()
 
-macro(_Sphinx_find_extension _ext)
-  if(_SPHINX_PYTHON_EXECUTABLE)
+macro(_Sphinx_find_module _name _module)
+  string(TOUPPER "${_name}" _Sphinx_uc)
+  if(SPHINX_PYTHON_EXECUTABLE)
     execute_process(
-      COMMAND ${_SPHINX_PYTHON_EXECUTABLE} -c "import ${_ext}"
+      COMMAND ${SPHINX_PYTHON_EXECUTABLE} -m ${_module} --version
+      RESULT_VARIABLE _result
+      OUTPUT_VARIABLE _output
+      OUTPUT_STRIP_TRAILING_WHITESPACE)
+    if(_result EQUAL 0)
+      if(_output MATCHES " v?([0-9]+\\.[0-9]+\\.[0-9]+)$")
+        set(SPHINX_${_Sphinx_uc}_VERSION "${CMAKE_MATCH_1}")
+      endif()
+
+      if(NOT TARGET Sphinx::${_name})
+        set(SPHINX_${_Sphinx_uc}_EXECUTABLE "${SPHINX_PYTHON_EXECUTABLE} -m ${_module}")
+        add_executable(Sphinx::${_name} IMPORTED GLOBAL)
+        set_target_properties(Sphinx::${_name} PROPERTIES
+          IMPORTED_LOCATION "${SPHINX_PYTHON_EXECUTABLE}")
+      endif()
+      set(Sphinx_${_name}_ARGS -m ${_module})
+      set(Sphinx_${_name}_FOUND TRUE)
+    else()
+      set(Sphinx_${_name}_FOUND FALSE)
+    endif()
+  else()
+    set(Sphinx_${_name}_FOUND FALSE)
+  endif()
+  unset(_Sphinx_uc)
+endmacro()
+
+macro(_Sphinx_find_extension _ext)
+  if(SPHINX_PYTHON_EXECUTABLE)
+    execute_process(
+      COMMAND ${SPHINX_PYTHON_EXECUTABLE} -c "import ${_ext}"
       RESULT_VARIABLE _result)
     if(_result EQUAL 0)
       set(Sphinx_${_ext}_FOUND TRUE)
     else()
       set(Sphinx_${_ext}_FOUND FALSE)
     endif()
-  elseif(CMAKE_HOST_WIN32 AND SPHINX_BUILD_EXECUTABLE)
+  endif()
+endmacro()
+
+# Find sphinx-build shim
+_Sphinx_find_executable(build)
+
+if(SPHINX_BUILD_EXECUTABLE)
+  # Find sphinx-quickstart shim
+  _Sphinx_find_executable(quickstart)
+
+  # Locate Python executable
+  if(CMAKE_HOST_WIN32)
     # script-build on Windows located under (when PIP is used):
     # C:/Program Files/PythonXX/Scripts
     # C:/Users/username/AppData/Roaming/Python/PythonXX/Sripts
@@ -50,66 +93,66 @@ macro(_Sphinx_find_extension _ext)
     #
     # To verify a given module is installed, use the Python base directory
     # and test if either Lib/module.py or site-packages/module.py exists.
-    get_filename_component(_dirname "${SPHINX_BUILD_EXECUTABLE}" DIRECTORY)
-    get_filename_component(_dirname "${_dirname}" DIRECTORY)
-    if(IS_DIRECTORY "${_dirname}/Lib/${_ext}" OR
-       IS_DIRECTORY "${_dirname}/site-packages/${_ext}")
-      set(Sphinx_${_ext}_FOUND TRUE)
-    else()
-      set(Sphinx_${_ext}_FOUND FALSE)
+    get_filename_component(_Sphinx_dir "${SPHINX_BUILD_EXECUTABLE}" DIRECTORY)
+    get_filename_component(_Sphinx_dir "${_Sphinx_dir}" DIRECTORY)
+    if(EXISTS "${_Sphinx_dir}/python.exe")
+      set(SPHINX_PYTHON_EXECUTABLE "${_Sphinx_dir}/python.exe")
     endif()
+    unset(_Sphinx_dir)
+  else()
+    file(READ "${SPHINX_BUILD_EXECUTABLE}" _Sphinx_script)
+    if(_Sphinx_script MATCHES "^#!([^\n]+)")
+      string(STRIP "${CMAKE_MATCH_1}" _Sphinx_shebang)
+      if(EXISTS "${_Sphinx_shebang}")
+        set(SPHINX_PYTHON_EXECUTABLE "${_Sphinx_shebang}")
+      endif()
+    endif()
+    unset(_Sphinx_script)
+    unset(_Sphinx_shebang)
   endif()
-endmacro()
-
-#
-# Find sphinx-build and sphinx-quickstart.
-#
-_Sphinx_find_executable(build)
-_Sphinx_find_executable(quickstart)
-
-#
-# Verify both executables are part of the Sphinx distribution.
-#
-if(SPHINX_BUILD_EXECUTABLE AND SPHINX_QUICKSTART_EXECUTABLE)
-  if(NOT SPHINX_BUILD_VERSION STREQUAL SPHINX_QUICKSTART_VERSION)
-    message(FATAL_ERROR "Versions for sphinx-build (${SPHINX_BUILD_VERSION})"
-                        "and sphinx-quickstart (${SPHINX_QUICKSTART_VERSION})"
-                        "do not match")
+else()
+  # Revert to "python -m sphinx" if shim cannot be found
+  find_package(Python3 QUIET COMPONENTS Interpreter)
+  if(TARGET Python3::Interpreter)
+    set(SPHINX_PYTHON_EXECUTABLE ${Python3_EXECUTABLE})
+    _Sphinx_find_module(build sphinx)
+    _Sphinx_find_module(quickstart sphinx.cmd.quickstart)
   endif()
 endif()
 
 #
-# To verify the required Sphinx extensions are available, the right Python
-# installation must be queried (2 vs 3). Of course, this only makes sense on
-# UNIX-like systems.
+# Find sphinx-build and sphinx-quickstart.
 #
-if(NOT CMAKE_HOST_WIN32 AND SPHINX_BUILD_EXECUTABLE)
-  file(READ "${SPHINX_BUILD_EXECUTABLE}" _contents)
-  if(_contents MATCHES "^#!([^\n]+)")
-    string(STRIP "${CMAKE_MATCH_1}" _shebang)
-    if(EXISTS "${_shebang}")
-      set(_SPHINX_PYTHON_EXECUTABLE "${_shebang}")
-    endif()
-  endif()
+
+#
+# Verify both executables are part of the Sphinx distribution.
+#
+if(NOT SPHINX_BUILD_VERSION STREQUAL SPHINX_QUICKSTART_VERSION)
+  message(FATAL_ERROR "Versions for sphinx-build (${SPHINX_BUILD_VERSION}) "
+                      "and sphinx-quickstart (${SPHINX_QUICKSTART_VERSION}) "
+                      "do not match")
+endif()
+
+# Breathe is required for Exhale
+if("exhale"  IN_LIST Sphinx_FIND_COMPONENTS AND NOT
+   "breathe" IN_LIST Sphinx_FIND_COMPONENTS)
+  list(APPEND Sphinx_FIND_COMPONENTS "breathe")
 endif()
 
 foreach(_comp IN LISTS Sphinx_FIND_COMPONENTS)
   if(_comp STREQUAL "build")
     # Do nothing, sphinx-build is always required.
+    continue()
   elseif(_comp STREQUAL "quickstart")
     # Do nothing, sphinx-quickstart is optional, but looked up by default.
-  elseif(_comp STREQUAL "breathe")
-    _Sphinx_find_extension(${_comp})
-  else()
-    message(WARNING "${_comp} is not a valid or supported Sphinx extension")
-    set(Sphinx_${_comp}_FOUND FALSE)
     continue()
   endif()
+  _Sphinx_find_extension(${_comp})
 endforeach()
 
 find_package_handle_standard_args(
   Sphinx
-  VERSION_VAR SPHINX_VERSION
+  VERSION_VAR SPHINX_BUILD_VERSION
   REQUIRED_VARS SPHINX_BUILD_EXECUTABLE SPHINX_BUILD_VERSION
   HANDLE_COMPONENTS)
 
@@ -149,6 +192,10 @@ function(_Sphinx_generate_confpy _target _cachedir)
     set(SPHINX_LANGUAGE "en")
   endif()
 
+  if(NOT DEFINED SPHINX_MASTER)
+    set(SPHINX_MASTER "index")
+  endif()
+
   set(_known_exts autodoc doctest intersphinx todo coverage imgmath mathjax
                   ifconfig viewcode githubpages)
 
@@ -178,17 +225,20 @@ function(_Sphinx_generate_confpy _target _cachedir)
 
   set(_templatedir "${CMAKE_CURRENT_BINARY_DIR}/${_target}.template")
   file(MAKE_DIRECTORY "${_templatedir}")
+  string(REPLACE " " ";" _Sphinx_executable ${SPHINX_QUICKSTART_EXECUTABLE})
   execute_process(
-    COMMAND "${SPHINX_QUICKSTART_EXECUTABLE}"
+    COMMAND ${_Sphinx_executable}
               -q --no-makefile --no-batchfile
               -p "${SPHINX_PROJECT}"
               -a "${SPHINX_AUTHOR}"
               -v "${SPHINX_VERSION}"
               -r "${SPHINX_RELEASE}"
               -l "${SPHINX_LANGUAGE}"
+              --master "${SPHINX_MASTER}"
               ${_opts} ${_exts} "${_templatedir}"
     RESULT_VARIABLE _result
     OUTPUT_QUIET)
+  unset(_Sphinx_executable)
 
   if(_result EQUAL 0 AND EXISTS "${_templatedir}/conf.py")
     file(COPY "${_templatedir}/conf.py" DESTINATION "${_cachedir}")
@@ -300,14 +350,16 @@ function(sphinx_add_docs _target)
       "\nbreathe_default_project = '${_breathe_default_project}'")
   endif()
 
+  string(REPLACE " " ";" _Sphinx_executable ${SPHINX_BUILD_EXECUTABLE})
   add_custom_target(
-    ${_target}
-    COMMAND ${SPHINX_BUILD_EXECUTABLE}
+    ${_target} ALL
+    COMMAND ${_Sphinx_executable}
               -b ${_builder}
               -d "${CMAKE_CURRENT_BINARY_DIR}/${_target}.cache/_doctrees"
               -c "${CMAKE_CURRENT_BINARY_DIR}/${_target}.cache"
               "${_sourcedir}"
               "${_outputdir}"
     DEPENDS ${_depends})
+  unset(_Sphinx_executable)
 endfunction()
 

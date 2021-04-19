@@ -21,4 +21,3 @@ sphinx_add_docs(
   BREATHE_PROJECTS foobar_doxygen
   BUILDER html
   SOURCE_DIRECTORY docs)
-
