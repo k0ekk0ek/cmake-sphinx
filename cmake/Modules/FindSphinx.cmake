@@ -38,7 +38,8 @@ macro(_Sphinx_find_module _name _module)
       COMMAND ${SPHINX_PYTHON_EXECUTABLE} -m ${_module} --version
       RESULT_VARIABLE _result
       OUTPUT_VARIABLE _output
-      OUTPUT_STRIP_TRAILING_WHITESPACE)
+      OUTPUT_STRIP_TRAILING_WHITESPACE
+      ERROR_QUIET)
     if(_result EQUAL 0)
       if(_output MATCHES " v?([0-9]+\\.[0-9]+\\.[0-9]+)$")
         set(SPHINX_${_Sphinx_uc}_VERSION "${CMAKE_MATCH_1}")
@@ -74,11 +75,15 @@ macro(_Sphinx_find_extension _ext)
   endif()
 endmacro()
 
-# Find sphinx-build shim
+#
+# Find sphinx-build and sphinx-quickstart.
+#
+
+# Find sphinx-build shim.
 _Sphinx_find_executable(build)
 
 if(SPHINX_BUILD_EXECUTABLE)
-  # Find sphinx-quickstart shim
+  # Find sphinx-quickstart shim.
   _Sphinx_find_executable(quickstart)
 
   # Locate Python executable
@@ -93,12 +98,12 @@ if(SPHINX_BUILD_EXECUTABLE)
     #
     # To verify a given module is installed, use the Python base directory
     # and test if either Lib/module.py or site-packages/module.py exists.
-    get_filename_component(_Sphinx_dir "${SPHINX_BUILD_EXECUTABLE}" DIRECTORY)
-    get_filename_component(_Sphinx_dir "${_Sphinx_dir}" DIRECTORY)
-    if(EXISTS "${_Sphinx_dir}/python.exe")
-      set(SPHINX_PYTHON_EXECUTABLE "${_Sphinx_dir}/python.exe")
+    get_filename_component(_Sphinx_directory "${SPHINX_BUILD_EXECUTABLE}" DIRECTORY)
+    get_filename_component(_Sphinx_directory "${_Sphinx_directory}" DIRECTORY)
+    if(EXISTS "${_Sphinx_directory}/python.exe")
+      set(SPHINX_PYTHON_EXECUTABLE "${_Sphinx_directory}/python.exe")
     endif()
-    unset(_Sphinx_dir)
+    unset(_Sphinx_directory)
   else()
     file(READ "${SPHINX_BUILD_EXECUTABLE}" _Sphinx_script)
     if(_Sphinx_script MATCHES "^#!([^\n]+)")
@@ -110,52 +115,61 @@ if(SPHINX_BUILD_EXECUTABLE)
     unset(_Sphinx_script)
     unset(_Sphinx_shebang)
   endif()
-else()
-  # Revert to "python -m sphinx" if shim cannot be found
+endif()
+
+if(NOT SPHINX_PYTHON_EXECUTABLE)
+  # Python executable cannot be extracted from shim shebang or path if e.g.
+  # virtual environments are used, fallback to find package. Assume the
+  # correct installation is found, the setup is probably broken in more ways
+  # than one otherwise.
   find_package(Python3 QUIET COMPONENTS Interpreter)
   if(TARGET Python3::Interpreter)
     set(SPHINX_PYTHON_EXECUTABLE ${Python3_EXECUTABLE})
-    _Sphinx_find_module(build sphinx)
-    _Sphinx_find_module(quickstart sphinx.cmd.quickstart)
+    # Revert to "python -m sphinx" if shim cannot be found.
+    if(NOT SPHINX_BUILD_EXECUTABLE)
+      _Sphinx_find_module(build sphinx)
+      _Sphinx_find_module(quickstart sphinx.cmd.quickstart)
+    endif()
   endif()
 endif()
 
 #
-# Find sphinx-build and sphinx-quickstart.
+# Verify components are available.
 #
-
-#
-# Verify both executables are part of the Sphinx distribution.
-#
-if(NOT SPHINX_BUILD_VERSION STREQUAL SPHINX_QUICKSTART_VERSION)
-  message(FATAL_ERROR "Versions for sphinx-build (${SPHINX_BUILD_VERSION}) "
-                      "and sphinx-quickstart (${SPHINX_QUICKSTART_VERSION}) "
-                      "do not match")
-endif()
-
-# Breathe is required for Exhale
-if("exhale"  IN_LIST Sphinx_FIND_COMPONENTS AND NOT
-   "breathe" IN_LIST Sphinx_FIND_COMPONENTS)
-  list(APPEND Sphinx_FIND_COMPONENTS "breathe")
-endif()
-
-foreach(_comp IN LISTS Sphinx_FIND_COMPONENTS)
-  if(_comp STREQUAL "build")
-    # Do nothing, sphinx-build is always required.
-    continue()
-  elseif(_comp STREQUAL "quickstart")
-    # Do nothing, sphinx-quickstart is optional, but looked up by default.
-    continue()
+if(SPHINX_BUILD_VERSION)
+  # Breathe is required for Exhale
+  if("exhale"  IN_LIST Sphinx_FIND_COMPONENTS AND NOT
+     "breathe" IN_LIST Sphinx_FIND_COMPONENTS)
+    list(APPEND Sphinx_FIND_COMPONENTS "breathe")
   endif()
-  _Sphinx_find_extension(${_comp})
-endforeach()
+
+  foreach(_Sphinx_component IN LISTS Sphinx_FIND_COMPONENTS)
+    if(_Sphinx_component STREQUAL "build")
+      # Do nothing, sphinx-build is always required.
+      continue()
+    elseif(_Sphinx_component STREQUAL "quickstart")
+      # Do nothing, sphinx-quickstart is optional, but looked up by default.
+      continue()
+    endif()
+    _Sphinx_find_extension(${_Sphinx_component})
+  endforeach()
+  unset(_Sphinx_component)
+
+  #
+  # Verify both executables are part of the Sphinx distribution.
+  #
+  if(SPHINX_QUICKSTART_VERSION AND NOT SPHINX_BUILD_VERSION STREQUAL SPHINX_QUICKSTART_VERSION)
+    message(FATAL_ERROR "Versions for sphinx-build (${SPHINX_BUILD_VERSION}) "
+                        "and sphinx-quickstart (${SPHINX_QUICKSTART_VERSION}) "
+                        "do not match")
+  endif()
+endif()
 
 find_package_handle_standard_args(
   Sphinx
   VERSION_VAR SPHINX_BUILD_VERSION
   REQUIRED_VARS SPHINX_BUILD_EXECUTABLE SPHINX_BUILD_VERSION
   HANDLE_COMPONENTS)
-
 
 # Generate a conf.py template file using sphinx-quickstart.
 #
@@ -342,6 +356,9 @@ function(sphinx_add_docs _target)
   file(MAKE_DIRECTORY "${_cachedir}")
   file(MAKE_DIRECTORY "${_cachedir}/_static")
 
+  # FIXME: This step must become optional! Based on existance of conf.py in
+  #        the source directory and whether or not sphinx-quickstart was
+  #        found. If both are missing, it's an error!
   _Sphinx_generate_confpy(${_target} "${_cachedir}")
 
   if(_breathe_projects)
