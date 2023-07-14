@@ -354,12 +354,22 @@ function(sphinx_add_docs _target)
 
   set(_cachedir "${CMAKE_CURRENT_BINARY_DIR}/${_target}.cache")
   file(MAKE_DIRECTORY "${_cachedir}")
-  file(MAKE_DIRECTORY "${_cachedir}/_static")
+  if(EXISTS "${_sourcedir}/_static")
+    file(COPY "${_sourcedir}/_static" DESTINATION "${_cachedir}")
+  else()
+    file(MAKE_DIRECTORY "${_cachedir}/_static")
+  endif()
+  if(EXISTS "${_sourcedir}/_templates")
+    file(COPY "${_sourcedir}/_templates" DESTINATION "${_cachedir}")
+  else()
+    file(MAKE_DIRECTORY "${_cachedir}/_templates")
+  endif()
 
-  # FIXME: This step must become optional! Based on existance of conf.py in
-  #        the source directory and whether or not sphinx-quickstart was
-  #        found. If both are missing, it's an error!
-  _Sphinx_generate_confpy(${_target} "${_cachedir}")
+  if(EXISTS "${_sourcedir}/conf.py")
+    configure_file("${_sourcedir}/conf.py" "${_cachedir}/conf.py" @ONLY)
+  else()
+    _Sphinx_generate_confpy(${_target} "${_cachedir}")
+  endif()
 
   if(_breathe_projects)
     file(APPEND "${_cachedir}/conf.py"
@@ -379,4 +389,3 @@ function(sphinx_add_docs _target)
     DEPENDS ${_depends})
   unset(_Sphinx_executable)
 endfunction()
-
